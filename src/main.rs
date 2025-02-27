@@ -1,10 +1,11 @@
-use std::{net::IpAddr, process::Command};
+use std::{collections::{HashMap, HashSet}, net::IpAddr, process::Command, time::{Duration, Instant}};
+
 
 use etherparse::{IpHeader, PacketHeaders};
 use sysinfo::{PidExt, ProcessExt, ProcessRefreshKind, RefreshKind, System, SystemExt};
 use winroute::{Route, RouteManager};
 
-fn get_sot_pid(s: &System) -> Option<u32> {
+fn get_sot_pid(s: &System) -> Option<u32> { // get the pid of the Sea of Thieves process
     for process in s.processes_by_name("SoTGame.exe") {
         return Some(process.pid().as_u32());
     }
@@ -42,28 +43,28 @@ fn get_sot_ports(pid: u32) -> Vec<u16> {
 }
 
 fn main() {
-    println!("Making sure you have Npcap installed...");
+    println!("🤔 Npcap installé ? ");
     unsafe {
         let try_load_wpcap = libloading::Library::new("wpcap.dll");
         if try_load_wpcap.is_err() {
             println!("{}", "*".repeat(80));
-            println!("ERROR: It doesn't seem like you've installed Npcap.");
-            println!("Please install Npcap from\n    https://npcap.com/dist/npcap-1.72.exe\n");
-            println!("*** MAKE SURE TO INSTALL WITH 'WinPcap API Compatibility' TURNED ON ***");
+            println!("🛑 Erreur: Npcap n'est pas installé. :(");
+            println!("Installe npcap depuis : \n  https://npcap.com/dist/npcap-1.81.exe");
+            println!("***❗ ATTENTION : COCHER 'WinPcap API Compatibility' ***");
             println!("{}\n", "*".repeat(80));
-            println!("Want to continue anyway? Enter 'yes' or 'no':");
+            println!("Continuer ? (Y/N)");
             
             let mut input = String::new();
             std::io::stdin().read_line(&mut input).unwrap();
             let input = input.trim().to_lowercase();
-            if !(input == "y" || input == "yes") {
+            if !(input == "y" || input == "yes" || input == "o" || input == "oui") {
                 std::process::exit(1);
             }
         }
     }
 
     // wait until we get a sot pid
-    println!("Waiting for Sea of Thieves to be running... (you should start it)");
+    println!("En attente de lancement de Sea of Thieves... (Lance-le !)");
     let mut s =
         System::new_with_specifics(RefreshKind::new().with_processes(ProcessRefreshKind::new()));
 
@@ -74,7 +75,7 @@ fn main() {
         s.refresh_processes();
     };
 
-    println!("Found! PID: {}", sot_pid);
+    println!("Trouvé ! PID: {}", sot_pid);
 
     let devices = pcap::Device::list().unwrap();
     let auto_found_dev = devices.iter().find(|d| {
@@ -90,10 +91,10 @@ fn main() {
     let dev = match auto_found_dev {
         Some(d) => d.clone(),
         None => {
-            println!("Couldn't guess which network adapter to use. Please select one manually.");
-            println!("Network adapters attached to your PC: ");
+            println!("Sélectionne ton périph réseau, le réglage auto n'a pas fonctionné.");
+            println!("Adaptateurs Réseau reconnus sur ce PC : ");
 
-            let devices = pcap::Device::list().expect("device lookup failed");
+            let devices = pcap::Device::list().expect("fail de la liste des périphériques");
             let mut i = 1;
 
             for device in devices.clone() {
@@ -106,7 +107,7 @@ fn main() {
 
             // prompt user for their device
             println!(
-                "Please select your WiFi or Ethernet card, or if you're on a VPN, select the VPN: "
+                "Sélectionne ta carte WiFi ou Ethernet, ou si tu es sur un VPN, sélectionne le VPN: "
             );
             let mut input = String::new();
             std::io::stdin().read_line(&mut input).unwrap();
@@ -125,20 +126,24 @@ fn main() {
     let route_manager = RouteManager::new().unwrap();
     let the_void = "0.0.0.0".parse().unwrap();
 
-    println!("Which server are you trying to connect to? (e.g. 20.213.146.107:30618)\n    Enter 'idk' if you want to just print the server you're connecting to.");
+    println!("Quel serveur veux-tu atteindre (Demande à tes potes !) (e.g. 20.213.146.107:30618)\n    Entre idk/jsp si tu veux connaître le serveur actuel.");
     let mut target = String::new(); // ""
     std::io::stdin().read_line(&mut target).unwrap();
     let target = target.trim();
 
-    if target == "idk" {
-        println!("Alright, will print connected server.");
+    if target == "idk" || target == "jsp" {
+        println!("🤔 Détection du serveur");
     } else {
-        println!("Alright, server hop target: {}", target);
+        println!("🔗 Parfait, serveur cible : {}", target);
     }
 
-    println!("Waiting for you to connect to a game in Sea of Thieves...");
+    println!("En attente de connexion à un serveur Sea of Thieves...");
+    let mut active_connections: HashMap<String, (Instant, u32)> = HashMap::new();
+    let mut ip_history: HashMap<String, u32> = HashMap::new();
+    let mut seen_ips: HashSet<String> = HashSet::new();
+    let check_duration = Duration::from_secs(5); // Période d'observation
+    let min_packets = 10; // Nombre minimum de paquets pour considérer une connexion comme active
 
-    // iterate udp packets
     loop {
         if let Ok(raw_packet) = cap.next_packet() {
             if let Ok(packet) = PacketHeaders::from_ethernet_slice(raw_packet.data) {
@@ -151,52 +156,99 @@ fn main() {
 
                             if get_sot_ports(sot_pid).contains(&udp.source_port) {
                                 let ip = ipv4.destination.map(|c| c.to_string()).join(".");
+                                let addr = format!("{}:{}", ip, udp.destination_port);
 
-                                if target == "idk" {
-                                    println!("You are connected to: {}:{}\n   Press Enter to check again.", ip, udp.destination_port);
-                                    std::io::stdin().read_line(&mut String::new()).unwrap();
-                                    continue;
-                                }
+                                // Mise à jour du compteur de paquets pour cette IP
+                                let now = Instant::now();
+                                active_connections
+                                    .entry(addr.clone())
+                                    .and_modify(|(last_seen, count)| {
+                                        *last_seen = now;
+                                        *count += 1;
+                                    })
+                                    .or_insert((now, 1));
 
-                                if format!("{}:{}", ip, udp.destination_port) != target {
+                                // Nettoyage des anciennes connexions
+                                active_connections.retain(|_, (last_seen, _)| 
+                                    now.duration_since(*last_seen) < check_duration
+                                );
+
+                                // Affichage des connexions actives
+                                // Montrer la connexion active et le nombre de fois où elle a été vue
+                                println!("\nConnexions actives détectées:");
+                                for (addr, (_, count)) in active_connections.iter() {
+                                    // Mettre à jour l'historique
+                                    ip_history
+                                        .entry(addr.to_string())
+                                        .and_modify(|c| *c += 1)
+                                        .or_insert(1);
+                                    
+                                    let status = if seen_ips.contains(addr) {
+                                        "⚠️ Déjà vue"
+                                    } else {
+                                        seen_ips.insert(addr.to_string());
+                                        "🆕 Nouvelle"
+                                    };
+                                    
                                     println!(
-                                        "FAIL {}:{}, not the right server.",
-                                        ip, udp.destination_port
+                                        "- {} ({} paquets) | {} | Vue {} fois au total", 
+                                        addr, 
+                                        count,
+                                        status,
+                                        ip_history.get(addr).unwrap()
                                     );
-                                } else {
-                                    println!("SUCCESS {}:{}", ip, udp.destination_port);
-                                    std::io::stdin().read_line(&mut String::new()).unwrap();
-                                    break;
                                 }
 
-                                let blocking_route =
-                                    Route::new(ip.parse().unwrap(), 32).gateway(the_void);
+                                // Vérification de la connexion principale
+                                let main_connection = active_connections
+                                    .iter()
+                                    .filter(|(_, (_, count))| *count >= min_packets)
+                                    .max_by_key(|(_, (_, count))| *count);
 
-                                // add route
-                                if let Err(e) = route_manager.add_route(&blocking_route) {
-                                    println!(
-                                        "Error adding route for: {}:{} - {}",
-                                        ip, udp.destination_port, e
-                                    );
-                                } else {
-                                    // wait for enter
-                                    println!("Answer no to 'Do you want to rejoin your previous session?', then press Enter here.");
-                                    std::io::stdin().read_line(&mut String::new()).unwrap();
+                                if let Some((main_addr, _)) = main_connection {
+                                    if target == "idk" {
+                                        println!("\nConnexion principale: {}", main_addr);
+                                        println!("Appuyez sur Entrée pour actualiser.");
+                                        std::io::stdin().read_line(&mut String::new()).unwrap();
+                                        continue;
+                                    }
+
+                                    if main_addr != &target {
+                                        println!("FAIL {} - pas le bon serveur.", main_addr);
+                                        
+                                        let blocking_route =
+                                        Route::new(ip.parse().unwrap(), 32).gateway(the_void);
+                                        // add route
+                                        if let Err(e) = route_manager.add_route(&blocking_route) {
+                                            println!(
+                                                "Error adding route for: {}:{} - {}",
+                                                ip, udp.destination_port, e
+                                            );
+                                        } else {
+                                            // wait for enter
+                                            println!("Answer no to 'Do you want to rejoin your previous session?', then press Enter here.");
+                                            std::io::stdin().read_line(&mut String::new()).unwrap();
+                                            
+                                        }
+                                        println!("Unblocking {}...", ip);
+
+                                        // delete route, route_manager.delete_route doesn't work for some reason
+                                        let status = Command::new("route")
+                                            .arg("delete")
+                                            .arg(ip)
+                                            .status()
+                                            .unwrap();
+                                        if !status.success() {
+                                            println!("Failed to delete route.");
+                                        }
+
+                                        println!("Try setting sail again.");
+                                    } else {
+                                        println!("SUCCESS {}", main_addr);
+                                        std::io::stdin().read_line(&mut String::new()).unwrap();
+                                        break;
+                                    }
                                 }
-
-                                println!("Unblocking {}...", ip);
-
-                                // delete route, route_manager.delete_route doesn't work for some reason
-                                let status = Command::new("route")
-                                    .arg("delete")
-                                    .arg(ip)
-                                    .status()
-                                    .unwrap();
-                                if !status.success() {
-                                    println!("Failed to delete route.");
-                                }
-
-                                println!("Try setting sail again.");
                             }
                         }
                     }
@@ -205,3 +257,4 @@ fn main() {
         }
     }
 }
+
