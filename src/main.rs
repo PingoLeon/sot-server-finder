@@ -217,7 +217,7 @@ fn main() {
                                     .max_by_key(|(_, (_, count))| *count);
 
                                 if let Some((main_addr, _)) = main_connection {
-                                    if target == "idk" {
+                                    if target == "recherche" || target == "" {
                                         println!("\nConnexion principale: {}", main_addr);
                                         println!("Appuyez sur Entrée pour actualiser.");
                                         std::io::stdin().read_line(&mut String::new()).unwrap();
