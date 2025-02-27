@@ -126,15 +126,26 @@ fn main() {
     let route_manager = RouteManager::new().unwrap();
     let the_void = "0.0.0.0".parse().unwrap();
 
-    println!("Quel serveur veux-tu atteindre (Demande à tes potes !) (e.g. 20.213.146.107:30618)\n    Entre idk/jsp si tu veux connaître le serveur actuel.");
+    println!("Quel serveur veux-tu atteindre (Demande à tes potes !) (e.g. 20.213.146.107:30618)\n    Entre : \n- IP:PORT \nou\n- 'recherche' pour connaître le serveur actuel.");
     let mut target = String::new(); // ""
     std::io::stdin().read_line(&mut target).unwrap();
     let target = target.trim();
-
-    if target == "idk" || target == "jsp" {
+    
+    if target.chars().any(|c| c.is_numeric()) {
+        if let Some((ip, port)) = target.split_once(':') {
+            println!("🔗 Parfait, serveur cible IP: {}, PORT: {}", ip, port);
+        } else {
+            println!("⚠️ Format invalide! Utilise IP:PORT (ex: 20.213.146.107:30618)");
+            std::process::exit(1);
+        }
+    } else if target == "recherche" || target == "" {
         println!("🤔 Détection du serveur");
     } else {
-        println!("🔗 Parfait, serveur cible : {}", target);
+        println!("⚠️ Format invalide! L'entrée doit contenir des chiffres");
+        println!("\nAppuyez sur une touche pour quitter...");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).unwrap();
+        std::process::exit(1);
     }
 
     println!("En attente de connexion à un serveur Sea of Thieves...");
@@ -214,10 +225,12 @@ fn main() {
                                     }
 
                                     if main_addr != &target {
-                                        println!("FAIL {} - pas le bon serveur.", main_addr);
+                                        println!("FAIL {} ≠ {} pas le bon serveur. ", main_addr, target);
                                         
                                         let blocking_route =
                                         Route::new(ip.parse().unwrap(), 32).gateway(the_void);
+                                        println!("🔒 IP bloquée");
+                                        
                                         // add route
                                         if let Err(e) = route_manager.add_route(&blocking_route) {
                                             println!(
@@ -226,11 +239,11 @@ fn main() {
                                             );
                                         } else {
                                             // wait for enter
-                                            println!("Answer no to 'Do you want to rejoin your previous session?', then press Enter here.");
+                                            println!("Cliquer sur non sur 'Rejoindre la session précédente ?', et appuyer sur Entrée.");
                                             std::io::stdin().read_line(&mut String::new()).unwrap();
                                             
                                         }
-                                        println!("Unblocking {}...", ip);
+                                        println!("🔓 Déblocage {}...", ip);
 
                                         // delete route, route_manager.delete_route doesn't work for some reason
                                         let status = Command::new("route")
@@ -242,9 +255,9 @@ fn main() {
                                             println!("Failed to delete route.");
                                         }
 
-                                        println!("Try setting sail again.");
+                                        println!("Relance une partie !");
                                     } else {
-                                        println!("SUCCESS {}", main_addr);
+                                        println!("🎉🎉🎉 Trouvé ! {} 🎉🎉🎉", main_addr);
                                         std::io::stdin().read_line(&mut String::new()).unwrap();
                                         break;
                                     }
