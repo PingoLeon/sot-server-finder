@@ -1,6 +1,4 @@
 use std::{collections::{HashMap, HashSet}, net::IpAddr, process::Command, time::{Duration, Instant}};
-
-
 use etherparse::{IpHeader, PacketHeaders};
 use sysinfo::{PidExt, ProcessExt, ProcessRefreshKind, RefreshKind, System, SystemExt};
 use winroute::{Route, RouteManager};
@@ -120,13 +118,15 @@ fn main() {
     let mut cap = pcap::Capture::from_device(dev)
         .unwrap()
         .immediate_mode(true)
+        .promisc(true)  // Mode promiscuous
+        .snaplen(65535) // Taille maximale de capture
         .open()
         .unwrap();
 
     let route_manager = RouteManager::new().unwrap();
     let the_void = "0.0.0.0".parse().unwrap();
 
-    println!("Quel serveur veux-tu atteindre (Demande à tes potes !) (e.g. 20.213.146.107:30618)\n    Entre : \n- IP:PORT \nou\n- 'recherche' pour connaître le serveur actuel.");
+    println!("Quel serveur veux-tu atteindre (Demande à tes potes !) (e.g. 20.213.146.107:30618)\nEntre : - IP:PORT ou 'recherche' pour connaître le serveur actuel.");
     let mut target = String::new(); // ""
     std::io::stdin().read_line(&mut target).unwrap();
     let target = target.trim();
@@ -157,10 +157,16 @@ fn main() {
 
     loop {
         if let Ok(raw_packet) = cap.next_packet() {
+            println!("Paquet reçu !");
             if let Ok(packet) = PacketHeaders::from_ethernet_slice(raw_packet.data) {
                 if let Some(IpHeader::Version4(ipv4, _)) = packet.ip {
                     if let Some(transport) = packet.transport {
                         if let Some(udp) = transport.udp() {
+                            println!("UDP - Source: {}, Destination: {}", 
+                                udp.source_port, 
+                                udp.destination_port
+                            );
+                            
                             if udp.destination_port == 3075 || udp.destination_port == 30005 {
                                 continue;
                             }
